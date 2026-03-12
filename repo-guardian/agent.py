@@ -9,7 +9,7 @@ from datetime import datetime
 # Config
 # ------------------------
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # Set this in Codespace secrets
-GITHUB_REPO = "username/repo-name"  # Replace with your GitHub repo path
+GITHUB_REPO = "dainantonio/repo-guardian"  # Replace with your GitHub repo path
 BASE_BRANCH = "main"
 BOT_BRANCH = "repo-guardian-auto"
 
