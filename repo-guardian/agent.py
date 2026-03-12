@@ -7,15 +7,17 @@ import subprocess
 # Load cleanup rules
 # ------------------------
 def load_rules():
-    with open("cleanup_rules.yaml", "r") as f:
-        return yaml.safe_load(f)
+    try:
+        with open("cleanup_rules.yaml", "r") as f:
+            return yaml.safe_load(f)
+    except:
+        return {}
 
 # ------------------------
 # Find console.log statements
 # ------------------------
 def find_console_logs():
     issues = []
-
     for root, dirs, files in os.walk("."):
         for file in files:
             if file.endswith((".js", ".jsx", ".ts", ".tsx")):
@@ -37,9 +39,7 @@ def remove_console_logs(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-
         cleaned = [line for line in lines if "console.log" not in line]
-
         with open(file_path, "w", encoding="utf-8") as f:
             f.writelines(cleaned)
     except Exception as e:
@@ -79,6 +79,22 @@ def find_empty_files():
     return empty_files
 
 # ------------------------
+# Detect unused files (zero imports / very small JS/TS files)
+# ------------------------
+def find_unused_files():
+    unused = []
+    for root, dirs, files in os.walk("."):
+        for file in files:
+            if file.endswith((".js", ".jsx", ".ts", ".tsx", ".py")):
+                path = os.path.join(root, file)
+                try:
+                    if os.path.getsize(path) < 50:  # small files might be unused
+                        unused.append(path)
+                except:
+                    pass
+    return unused
+
+# ------------------------
 # Git auto-commit
 # ------------------------
 def commit_changes():
@@ -93,7 +109,18 @@ def commit_changes():
         print("ℹ️ No changes to commit.")
 
 # ------------------------
-# Main cleanup runner
+# Generate Repo Health Score
+# ------------------------
+def calculate_health(logs, large_files, empty_files, unused_files):
+    score = 100
+    score -= min(len(logs) * 3, 30)          # max penalty for logs
+    score -= min(len(large_files) * 2, 20)   # max penalty for large files
+    score -= min(len(empty_files) * 2, 10)   # max penalty for empty files
+    score -= min(len(unused_files) * 1, 10)  # max penalty for unused files
+    return max(score, 0)
+
+# ------------------------
+# Main runner
 # ------------------------
 def run_cleanup():
     print("🔍 Scanning repo...\n")
@@ -125,11 +152,23 @@ def run_cleanup():
     else:
         print("✅ No empty files found.")
 
-    # 4️⃣ Commit any changes
+    # 4️⃣ Unused files
+    print("\n📦 Checking for potentially unused files...")
+    unused_files = find_unused_files()
+    if unused_files:
+        for file in unused_files:
+            print(f"⚠️ Potential unused file: {file}")
+    else:
+        print("✅ No unused files found.")
+
+    # 5️⃣ Commit changes
     print("\n💾 Committing changes if any...")
     commit_changes()
 
-    print("\n🎉 Repo scan complete!")
+    # 6️⃣ Repo Health Score
+    score = calculate_health(logs, large_files, empty_files, unused_files)
+    print(f"\n📊 Repo Health Score: {score}/100")
+    print("🎉 Repo scan complete!")
 
 # ------------------------
 # Entry point
