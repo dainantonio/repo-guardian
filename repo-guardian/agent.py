@@ -1,21 +1,69 @@
 #!/usr/bin/env python3
 import os
-import yaml
-import subprocess
 import json
+import subprocess
+import requests
+from datetime import datetime
 
 # ------------------------
-# Load cleanup rules
+# Config
 # ------------------------
-def load_rules():
-    try:
-        with open("cleanup_rules.yaml", "r") as f:
-            return yaml.safe_load(f)
-    except:
-        return {}
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # Set this in Codespace secrets
+GITHUB_REPO = "dainantonio/repo-guardian"  # Replace with your GitHub repo path
+BASE_BRANCH = "main"
+BOT_BRANCH = "repo-guardian-auto"
 
 # ------------------------
-# Find console.log statements
+# Helper functions
+# ------------------------
+def run_cmd(cmd):
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return result.stdout.strip(), result.stderr.strip()
+
+def create_branch(branch):
+    stdout, _ = run_cmd(["git", "checkout", "-B", branch])
+    return stdout
+
+def commit_changes():
+    run_cmd(["git", "add", "."])
+    run_cmd(["git", "commit", "-m", "🤖 Repo Guardian: auto-cleanup & scan"])
+    run_cmd(["git", "push", "-u", "origin", BOT_BRANCH])
+
+# ------------------------
+# GitHub PR
+# ------------------------
+def create_pr(title, body):
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/pulls"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {
+        "title": title,
+        "head": BOT_BRANCH,
+        "base": BASE_BRANCH,
+        "body": body
+    }
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 201:
+        pr_url = response.json().get("html_url")
+        print(f"✅ PR created: {pr_url}")
+        return pr_url
+    else:
+        print(f"❌ PR creation failed: {response.text}")
+        return None
+
+def post_pr_comment(pr_number, comment):
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/issues/{pr_number}/comments"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {"body": comment}
+    requests.post(url, headers=headers, json=data)
+
+# ------------------------
+# Scan functions
 # ------------------------
 def find_console_logs():
     issues = []
@@ -28,27 +76,11 @@ def find_console_logs():
                         lines = f.readlines()
                     for i, line in enumerate(lines):
                         if "console.log" in line:
-                            issues.append((path, i + 1))
+                            issues.append(f"{path}:{i+1}")
                 except:
                     pass
     return issues
 
-# ------------------------
-# Remove console.log from file
-# ------------------------
-def remove_console_logs(file_path):
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        cleaned = [line for line in lines if "console.log" not in line]
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.writelines(cleaned)
-    except Exception as e:
-        print(f"Error cleaning {file_path}: {e}")
-
-# ------------------------
-# Detect large files
-# ------------------------
 def find_large_files(max_lines=300):
     large_files = []
     for root, dirs, files in os.walk("."):
@@ -59,14 +91,11 @@ def find_large_files(max_lines=300):
                     with open(path, "r", encoding="utf-8") as f:
                         line_count = len(f.readlines())
                     if line_count > max_lines:
-                        large_files.append((path, line_count))
+                        large_files.append(f"{path} ({line_count} lines)")
                 except:
                     pass
     return large_files
 
-# ------------------------
-# Detect empty files
-# ------------------------
 def find_empty_files():
     empty_files = []
     for root, dirs, files in os.walk("."):
@@ -79,9 +108,6 @@ def find_empty_files():
                 pass
     return empty_files
 
-# ------------------------
-# Detect unused / tiny files
-# ------------------------
 def find_unused_files():
     unused = []
     for root, dirs, files in os.walk("."):
@@ -89,26 +115,21 @@ def find_unused_files():
             if file.endswith((".js", ".jsx", ".ts", ".tsx", ".py")):
                 path = os.path.join(root, file)
                 try:
-                    if os.path.getsize(path) < 50:  # very small files may be unused
+                    if os.path.getsize(path) < 50:
                         unused.append(path)
                 except:
                     pass
     return unused
 
-# ------------------------
-# Scan dependencies (JS / Python)
-# ------------------------
 def find_unused_dependencies():
     unused = []
-
-    # JavaScript / Node
+    # JS dependencies
     if os.path.exists("package.json"):
         try:
             with open("package.json") as f:
                 pkg = json.load(f)
             deps = pkg.get("dependencies", {})
             for dep in deps:
-                # Check if import / require exists in any JS/TS file
                 found = False
                 for root, dirs, files in os.walk("."):
                     for file in files:
@@ -118,14 +139,12 @@ def find_unused_dependencies():
                                 if dep in f2.read():
                                     found = True
                                     break
-                    if found:
-                        break
+                    if found: break
                 if not found:
                     unused.append(f"JS: {dep}")
         except:
             pass
-
-    # Python
+    # Python dependencies
     if os.path.exists("requirements.txt"):
         try:
             with open("requirements.txt") as f:
@@ -141,103 +160,70 @@ def find_unused_dependencies():
                                 if pkg_name in f2.read():
                                     found = True
                                     break
-                    if found:
-                        break
+                    if found: break
                 if not found:
                     unused.append(f"PY: {pkg_name}")
         except:
             pass
-
     return unused
 
 # ------------------------
-# Git auto-commit
-# ------------------------
-def commit_changes():
-    try:
-        subprocess.run(["git", "add", "."], check=True)
-        subprocess.run(
-            ["git", "commit", "-m", "🤖 Repo Guardian: auto-cleanup and scan"], check=True
-        )
-        subprocess.run(["git", "push"], check=True)
-        print("✅ Changes committed and pushed to GitHub!")
-    except subprocess.CalledProcessError:
-        print("ℹ️ No changes to commit.")
-
-# ------------------------
-# Repo health scoring
+# Health score
 # ------------------------
 def calculate_health(logs, large_files, empty_files, unused_files, unused_deps):
     score = 100
-    score -= min(len(logs) * 3, 30)
-    score -= min(len(large_files) * 2, 20)
-    score -= min(len(empty_files) * 2, 10)
-    score -= min(len(unused_files) * 1, 10)
-    score -= min(len(unused_deps) * 2, 20)
-    return max(score, 0)
+    score -= min(len(logs)*3,30)
+    score -= min(len(large_files)*2,20)
+    score -= min(len(empty_files)*2,10)
+    score -= min(len(unused_files)*1,10)
+    score -= min(len(unused_deps)*2,20)
+    return max(score,0)
 
 # ------------------------
-# Main runner
+# Run full scan & create PR
 # ------------------------
-def run_cleanup():
-    print("🔍 Scanning repo...\n")
+def run_repo_guardian():
+    print("🔍 Scanning repo...")
 
-    # Logs
     logs = find_console_logs()
-    if logs:
-        for file, line in logs:
-            print(f"Cleaning console log in {file}")
-            remove_console_logs(file)
-    else:
-        print("✅ No console logs found.")
-
-    # Large files
-    print("\n📂 Checking for large files...")
     large_files = find_large_files()
-    if large_files:
-        for file, lines in large_files:
-            print(f"⚠️ Large file detected: {file} ({lines} lines)")
-    else:
-        print("✅ No oversized files found.")
-
-    # Empty files
-    print("\n🗑 Checking for empty files...")
     empty_files = find_empty_files()
-    if empty_files:
-        for file in empty_files:
-            print(f"⚠️ Empty file detected: {file}")
-    else:
-        print("✅ No empty files found.")
-
-    # Unused files
-    print("\n📦 Checking for potentially unused files...")
     unused_files = find_unused_files()
-    if unused_files:
-        for file in unused_files:
-            print(f"⚠️ Potential unused file: {file}")
-    else:
-        print("✅ No unused files found.")
-
-    # Unused dependencies
-    print("\n📌 Checking for unused dependencies...")
     unused_deps = find_unused_dependencies()
-    if unused_deps:
-        for dep in unused_deps:
-            print(f"⚠️ Unused dependency: {dep}")
-    else:
-        print("✅ No unused dependencies found.")
 
-    # Commit changes
-    print("\n💾 Committing changes if any...")
+    # Remove console logs
+    for f in logs:
+        file_path = f.split(":")[0]
+        try:
+            with open(file_path, "r") as fp:
+                lines = fp.readlines()
+            lines = [line for line in lines if "console.log" not in line]
+            with open(file_path, "w") as fp:
+                fp.writelines(lines)
+        except: pass
+
+    # Commit & push branch
+    create_branch(BOT_BRANCH)
     commit_changes()
 
-    # Repo Health Score
     score = calculate_health(logs, large_files, empty_files, unused_files, unused_deps)
-    print(f"\n📊 Repo Health Score: {score}/100")
-    print("🎉 Repo scan complete!")
+
+    # Generate PR body
+    body = f"## Repo Guardian Scan Results\n\n"
+    body += f"**Repo Health Score:** {score}/100\n\n"
+    def fmt_list(items, desc):
+        return "\n".join(f"- {i}" for i in items) if items else f"✅ No {desc} found."
+    body += "### Console Logs Removed\n" + fmt_list(logs, "console logs") + "\n\n"
+    body += "### Large Files\n" + fmt_list(large_files, "large files") + "\n\n"
+    body += "### Empty Files\n" + fmt_list(empty_files, "empty files") + "\n\n"
+    body += "### Potentially Unused Files\n" + fmt_list(unused_files, "unused files") + "\n\n"
+    body += "### Unused Dependencies\n" + fmt_list(unused_deps, "unused dependencies") + "\n\n"
+
+    pr_url = create_pr(title="🤖 Repo Guardian Auto PR", body=body)
+    print(f"🎉 Scan complete. PR ready at {pr_url}")
 
 # ------------------------
-# Entry point
+# Entry
 # ------------------------
 if __name__ == "__main__":
-    run_cleanup()
+    run_repo_guardian()
