@@ -3,9 +3,10 @@ import os
 import yaml
 import subprocess
 import json
+from datetime import datetime
 
 # ------------------------
-# Load cleanup rules
+# Helper functions
 # ------------------------
 def load_rules():
     try:
@@ -14,9 +15,6 @@ def load_rules():
     except:
         return {}
 
-# ------------------------
-# Find console.log statements
-# ------------------------
 def find_console_logs():
     issues = []
     for root, dirs, files in os.walk("."):
@@ -33,9 +31,6 @@ def find_console_logs():
                     pass
     return issues
 
-# ------------------------
-# Remove console.log from file
-# ------------------------
 def remove_console_logs(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -46,9 +41,6 @@ def remove_console_logs(file_path):
     except Exception as e:
         print(f"Error cleaning {file_path}: {e}")
 
-# ------------------------
-# Detect large files
-# ------------------------
 def find_large_files(max_lines=300):
     large_files = []
     for root, dirs, files in os.walk("."):
@@ -64,9 +56,6 @@ def find_large_files(max_lines=300):
                     pass
     return large_files
 
-# ------------------------
-# Detect empty files
-# ------------------------
 def find_empty_files():
     empty_files = []
     for root, dirs, files in os.walk("."):
@@ -79,9 +68,6 @@ def find_empty_files():
                 pass
     return empty_files
 
-# ------------------------
-# Detect unused / tiny files
-# ------------------------
 def find_unused_files():
     unused = []
     for root, dirs, files in os.walk("."):
@@ -89,26 +75,22 @@ def find_unused_files():
             if file.endswith((".js", ".jsx", ".ts", ".tsx", ".py")):
                 path = os.path.join(root, file)
                 try:
-                    if os.path.getsize(path) < 50:  # very small files may be unused
+                    if os.path.getsize(path) < 50:
                         unused.append(path)
                 except:
                     pass
     return unused
 
-# ------------------------
-# Scan dependencies (JS / Python)
-# ------------------------
 def find_unused_dependencies():
     unused = []
 
-    # JavaScript / Node
+    # JS/Node
     if os.path.exists("package.json"):
         try:
             with open("package.json") as f:
                 pkg = json.load(f)
             deps = pkg.get("dependencies", {})
             for dep in deps:
-                # Check if import / require exists in any JS/TS file
                 found = False
                 for root, dirs, files in os.walk("."):
                     for file in files:
@@ -118,10 +100,8 @@ def find_unused_dependencies():
                                 if dep in f2.read():
                                     found = True
                                     break
-                    if found:
-                        break
-                if not found:
-                    unused.append(f"JS: {dep}")
+                    if found: break
+                if not found: unused.append(f"JS: {dep}")
         except:
             pass
 
@@ -141,32 +121,30 @@ def find_unused_dependencies():
                                 if pkg_name in f2.read():
                                     found = True
                                     break
-                    if found:
-                        break
-                if not found:
-                    unused.append(f"PY: {pkg_name}")
+                    if found: break
+                if not found: unused.append(f"PY: {pkg_name}")
         except:
             pass
 
     return unused
 
-# ------------------------
-# Git auto-commit
-# ------------------------
-def commit_changes():
+def commit_changes(branch_name="repo-guardian-auto"):
+    try:
+        subprocess.run(["git", "checkout", "-b", branch_name], check=True)
+    except subprocess.CalledProcessError:
+        # branch exists? just checkout
+        subprocess.run(["git", "checkout", branch_name], check=True)
+
     try:
         subprocess.run(["git", "add", "."], check=True)
         subprocess.run(
-            ["git", "commit", "-m", "🤖 Repo Guardian: auto-cleanup and scan"], check=True
+            ["git", "commit", "-m", "🤖 Repo Guardian: auto-cleanup & scan"], check=True
         )
-        subprocess.run(["git", "push"], check=True)
-        print("✅ Changes committed and pushed to GitHub!")
+        subprocess.run(["git", "push", "-u", "origin", branch_name], check=True)
+        print(f"✅ Changes committed and pushed to branch '{branch_name}'!")
     except subprocess.CalledProcessError:
         print("ℹ️ No changes to commit.")
 
-# ------------------------
-# Repo health scoring
-# ------------------------
 def calculate_health(logs, large_files, empty_files, unused_files, unused_deps):
     score = 100
     score -= min(len(logs) * 3, 30)
@@ -176,13 +154,38 @@ def calculate_health(logs, large_files, empty_files, unused_files, unused_deps):
     score -= min(len(unused_deps) * 2, 20)
     return max(score, 0)
 
+def generate_report(logs, large_files, empty_files, unused_files, unused_deps, score):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report = f"# Repo Guardian Report — {timestamp}\n\n"
+    report += f"**Repo Health Score:** {score}/100\n\n"
+
+    def list_or_ok(items, desc):
+        if items:
+            return "\n".join([f"- {item}" for item in items])
+        else:
+            return f"✅ No {desc} found."
+
+    report += "## Console Logs Removed\n"
+    report += list_or_ok([f"{file}:{line}" for file, line in logs], "console logs") + "\n\n"
+    report += "## Large Files\n"
+    report += list_or_ok([f"{file} ({lines} lines)" for file, lines in large_files], "large files") + "\n\n"
+    report += "## Empty Files\n"
+    report += list_or_ok(empty_files, "empty files") + "\n\n"
+    report += "## Potentially Unused Files\n"
+    report += list_or_ok(unused_files, "unused files") + "\n\n"
+    report += "## Unused Dependencies\n"
+    report += list_or_ok(unused_deps, "unused dependencies") + "\n\n"
+
+    with open("REPO_GUARDIAN_REPORT.md", "w", encoding="utf-8") as f:
+        f.write(report)
+    print("📝 Markdown report generated: REPO_GUARDIAN_REPORT.md")
+
 # ------------------------
-# Main runner
+# Main Runner
 # ------------------------
 def run_cleanup():
     print("🔍 Scanning repo...\n")
 
-    # Logs
     logs = find_console_logs()
     if logs:
         for file, line in logs:
@@ -191,50 +194,19 @@ def run_cleanup():
     else:
         print("✅ No console logs found.")
 
-    # Large files
-    print("\n📂 Checking for large files...")
     large_files = find_large_files()
-    if large_files:
-        for file, lines in large_files:
-            print(f"⚠️ Large file detected: {file} ({lines} lines)")
-    else:
-        print("✅ No oversized files found.")
-
-    # Empty files
-    print("\n🗑 Checking for empty files...")
     empty_files = find_empty_files()
-    if empty_files:
-        for file in empty_files:
-            print(f"⚠️ Empty file detected: {file}")
-    else:
-        print("✅ No empty files found.")
-
-    # Unused files
-    print("\n📦 Checking for potentially unused files...")
     unused_files = find_unused_files()
-    if unused_files:
-        for file in unused_files:
-            print(f"⚠️ Potential unused file: {file}")
-    else:
-        print("✅ No unused files found.")
-
-    # Unused dependencies
-    print("\n📌 Checking for unused dependencies...")
     unused_deps = find_unused_dependencies()
-    if unused_deps:
-        for dep in unused_deps:
-            print(f"⚠️ Unused dependency: {dep}")
-    else:
-        print("✅ No unused dependencies found.")
 
-    # Commit changes
-    print("\n💾 Committing changes if any...")
-    commit_changes()
+    print("\n💾 Committing changes and creating branch...")
+    commit_changes(branch_name="repo-guardian-auto")
 
-    # Repo Health Score
     score = calculate_health(logs, large_files, empty_files, unused_files, unused_deps)
     print(f"\n📊 Repo Health Score: {score}/100")
-    print("🎉 Repo scan complete!")
+
+    generate_report(logs, large_files, empty_files, unused_files, unused_deps, score)
+    print("🎉 Repo scan complete! Ready for PR review.")
 
 # ------------------------
 # Entry point
