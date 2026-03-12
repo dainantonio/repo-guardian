@@ -1,20 +1,70 @@
 #!/usr/bin/env python3
 import os
-import yaml
-import subprocess
 import json
+import subprocess
+import requests
 from datetime import datetime
+
+# ------------------------
+# Config
+# ------------------------
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # Set this in Codespace secrets
+GITHUB_REPO = "username/repo-name"  # Replace with your GitHub repo path
+BASE_BRANCH = "main"
+BOT_BRANCH = "repo-guardian-auto"
 
 # ------------------------
 # Helper functions
 # ------------------------
-def load_rules():
-    try:
-        with open("cleanup_rules.yaml", "r") as f:
-            return yaml.safe_load(f)
-    except:
-        return {}
+def run_cmd(cmd):
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return result.stdout.strip(), result.stderr.strip()
 
+def create_branch(branch):
+    stdout, _ = run_cmd(["git", "checkout", "-B", branch])
+    return stdout
+
+def commit_changes():
+    run_cmd(["git", "add", "."])
+    run_cmd(["git", "commit", "-m", "🤖 Repo Guardian: auto-cleanup & scan"])
+    run_cmd(["git", "push", "-u", "origin", BOT_BRANCH])
+
+# ------------------------
+# GitHub PR
+# ------------------------
+def create_pr(title, body):
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/pulls"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {
+        "title": title,
+        "head": BOT_BRANCH,
+        "base": BASE_BRANCH,
+        "body": body
+    }
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 201:
+        pr_url = response.json().get("html_url")
+        print(f"✅ PR created: {pr_url}")
+        return pr_url
+    else:
+        print(f"❌ PR creation failed: {response.text}")
+        return None
+
+def post_pr_comment(pr_number, comment):
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/issues/{pr_number}/comments"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {"body": comment}
+    requests.post(url, headers=headers, json=data)
+
+# ------------------------
+# Scan functions
+# ------------------------
 def find_console_logs():
     issues = []
     for root, dirs, files in os.walk("."):
@@ -26,20 +76,10 @@ def find_console_logs():
                         lines = f.readlines()
                     for i, line in enumerate(lines):
                         if "console.log" in line:
-                            issues.append((path, i + 1))
+                            issues.append(f"{path}:{i+1}")
                 except:
                     pass
     return issues
-
-def remove_console_logs(file_path):
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        cleaned = [line for line in lines if "console.log" not in line]
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.writelines(cleaned)
-    except Exception as e:
-        print(f"Error cleaning {file_path}: {e}")
 
 def find_large_files(max_lines=300):
     large_files = []
@@ -51,7 +91,7 @@ def find_large_files(max_lines=300):
                     with open(path, "r", encoding="utf-8") as f:
                         line_count = len(f.readlines())
                     if line_count > max_lines:
-                        large_files.append((path, line_count))
+                        large_files.append(f"{path} ({line_count} lines)")
                 except:
                     pass
     return large_files
@@ -83,8 +123,7 @@ def find_unused_files():
 
 def find_unused_dependencies():
     unused = []
-
-    # JS/Node
+    # JS dependencies
     if os.path.exists("package.json"):
         try:
             with open("package.json") as f:
@@ -101,11 +140,11 @@ def find_unused_dependencies():
                                     found = True
                                     break
                     if found: break
-                if not found: unused.append(f"JS: {dep}")
+                if not found:
+                    unused.append(f"JS: {dep}")
         except:
             pass
-
-    # Python
+    # Python dependencies
     if os.path.exists("requirements.txt"):
         try:
             with open("requirements.txt") as f:
@@ -122,94 +161,69 @@ def find_unused_dependencies():
                                     found = True
                                     break
                     if found: break
-                if not found: unused.append(f"PY: {pkg_name}")
+                if not found:
+                    unused.append(f"PY: {pkg_name}")
         except:
             pass
-
     return unused
 
-def commit_changes(branch_name="repo-guardian-auto"):
-    try:
-        subprocess.run(["git", "checkout", "-b", branch_name], check=True)
-    except subprocess.CalledProcessError:
-        # branch exists? just checkout
-        subprocess.run(["git", "checkout", branch_name], check=True)
-
-    try:
-        subprocess.run(["git", "add", "."], check=True)
-        subprocess.run(
-            ["git", "commit", "-m", "🤖 Repo Guardian: auto-cleanup & scan"], check=True
-        )
-        subprocess.run(["git", "push", "-u", "origin", branch_name], check=True)
-        print(f"✅ Changes committed and pushed to branch '{branch_name}'!")
-    except subprocess.CalledProcessError:
-        print("ℹ️ No changes to commit.")
-
+# ------------------------
+# Health score
+# ------------------------
 def calculate_health(logs, large_files, empty_files, unused_files, unused_deps):
     score = 100
-    score -= min(len(logs) * 3, 30)
-    score -= min(len(large_files) * 2, 20)
-    score -= min(len(empty_files) * 2, 10)
-    score -= min(len(unused_files) * 1, 10)
-    score -= min(len(unused_deps) * 2, 20)
-    return max(score, 0)
-
-def generate_report(logs, large_files, empty_files, unused_files, unused_deps, score):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report = f"# Repo Guardian Report — {timestamp}\n\n"
-    report += f"**Repo Health Score:** {score}/100\n\n"
-
-    def list_or_ok(items, desc):
-        if items:
-            return "\n".join([f"- {item}" for item in items])
-        else:
-            return f"✅ No {desc} found."
-
-    report += "## Console Logs Removed\n"
-    report += list_or_ok([f"{file}:{line}" for file, line in logs], "console logs") + "\n\n"
-    report += "## Large Files\n"
-    report += list_or_ok([f"{file} ({lines} lines)" for file, lines in large_files], "large files") + "\n\n"
-    report += "## Empty Files\n"
-    report += list_or_ok(empty_files, "empty files") + "\n\n"
-    report += "## Potentially Unused Files\n"
-    report += list_or_ok(unused_files, "unused files") + "\n\n"
-    report += "## Unused Dependencies\n"
-    report += list_or_ok(unused_deps, "unused dependencies") + "\n\n"
-
-    with open("REPO_GUARDIAN_REPORT.md", "w", encoding="utf-8") as f:
-        f.write(report)
-    print("📝 Markdown report generated: REPO_GUARDIAN_REPORT.md")
+    score -= min(len(logs)*3,30)
+    score -= min(len(large_files)*2,20)
+    score -= min(len(empty_files)*2,10)
+    score -= min(len(unused_files)*1,10)
+    score -= min(len(unused_deps)*2,20)
+    return max(score,0)
 
 # ------------------------
-# Main Runner
+# Run full scan & create PR
 # ------------------------
-def run_cleanup():
-    print("🔍 Scanning repo...\n")
+def run_repo_guardian():
+    print("🔍 Scanning repo...")
 
     logs = find_console_logs()
-    if logs:
-        for file, line in logs:
-            print(f"Cleaning console log in {file}")
-            remove_console_logs(file)
-    else:
-        print("✅ No console logs found.")
-
     large_files = find_large_files()
     empty_files = find_empty_files()
     unused_files = find_unused_files()
     unused_deps = find_unused_dependencies()
 
-    print("\n💾 Committing changes and creating branch...")
-    commit_changes(branch_name="repo-guardian-auto")
+    # Remove console logs
+    for f in logs:
+        file_path = f.split(":")[0]
+        try:
+            with open(file_path, "r") as fp:
+                lines = fp.readlines()
+            lines = [line for line in lines if "console.log" not in line]
+            with open(file_path, "w") as fp:
+                fp.writelines(lines)
+        except: pass
+
+    # Commit & push branch
+    create_branch(BOT_BRANCH)
+    commit_changes()
 
     score = calculate_health(logs, large_files, empty_files, unused_files, unused_deps)
-    print(f"\n📊 Repo Health Score: {score}/100")
 
-    generate_report(logs, large_files, empty_files, unused_files, unused_deps, score)
-    print("🎉 Repo scan complete! Ready for PR review.")
+    # Generate PR body
+    body = f"## Repo Guardian Scan Results\n\n"
+    body += f"**Repo Health Score:** {score}/100\n\n"
+    def fmt_list(items, desc):
+        return "\n".join(f"- {i}" for i in items) if items else f"✅ No {desc} found."
+    body += "### Console Logs Removed\n" + fmt_list(logs, "console logs") + "\n\n"
+    body += "### Large Files\n" + fmt_list(large_files, "large files") + "\n\n"
+    body += "### Empty Files\n" + fmt_list(empty_files, "empty files") + "\n\n"
+    body += "### Potentially Unused Files\n" + fmt_list(unused_files, "unused files") + "\n\n"
+    body += "### Unused Dependencies\n" + fmt_list(unused_deps, "unused dependencies") + "\n\n"
+
+    pr_url = create_pr(title="🤖 Repo Guardian Auto PR", body=body)
+    print(f"🎉 Scan complete. PR ready at {pr_url}")
 
 # ------------------------
-# Entry point
+# Entry
 # ------------------------
 if __name__ == "__main__":
-    run_cleanup()
+    run_repo_guardian()
