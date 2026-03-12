@@ -2,6 +2,7 @@
 import os
 import yaml
 import subprocess
+import json
 
 # ------------------------
 # Load cleanup rules
@@ -79,7 +80,7 @@ def find_empty_files():
     return empty_files
 
 # ------------------------
-# Detect unused files (zero imports / very small JS/TS files)
+# Detect unused / tiny files
 # ------------------------
 def find_unused_files():
     unused = []
@@ -88,10 +89,65 @@ def find_unused_files():
             if file.endswith((".js", ".jsx", ".ts", ".tsx", ".py")):
                 path = os.path.join(root, file)
                 try:
-                    if os.path.getsize(path) < 50:  # small files might be unused
+                    if os.path.getsize(path) < 50:  # very small files may be unused
                         unused.append(path)
                 except:
                     pass
+    return unused
+
+# ------------------------
+# Scan dependencies (JS / Python)
+# ------------------------
+def find_unused_dependencies():
+    unused = []
+
+    # JavaScript / Node
+    if os.path.exists("package.json"):
+        try:
+            with open("package.json") as f:
+                pkg = json.load(f)
+            deps = pkg.get("dependencies", {})
+            for dep in deps:
+                # Check if import / require exists in any JS/TS file
+                found = False
+                for root, dirs, files in os.walk("."):
+                    for file in files:
+                        if file.endswith((".js", ".jsx", ".ts", ".tsx")):
+                            path = os.path.join(root, file)
+                            with open(path, "r", encoding="utf-8") as f2:
+                                if dep in f2.read():
+                                    found = True
+                                    break
+                    if found:
+                        break
+                if not found:
+                    unused.append(f"JS: {dep}")
+        except:
+            pass
+
+    # Python
+    if os.path.exists("requirements.txt"):
+        try:
+            with open("requirements.txt") as f:
+                reqs = f.readlines()
+            for req in reqs:
+                pkg_name = req.strip().split("==")[0]
+                found = False
+                for root, dirs, files in os.walk("."):
+                    for file in files:
+                        if file.endswith(".py"):
+                            path = os.path.join(root, file)
+                            with open(path, "r", encoding="utf-8") as f2:
+                                if pkg_name in f2.read():
+                                    found = True
+                                    break
+                    if found:
+                        break
+                if not found:
+                    unused.append(f"PY: {pkg_name}")
+        except:
+            pass
+
     return unused
 
 # ------------------------
@@ -109,14 +165,15 @@ def commit_changes():
         print("ℹ️ No changes to commit.")
 
 # ------------------------
-# Generate Repo Health Score
+# Repo health scoring
 # ------------------------
-def calculate_health(logs, large_files, empty_files, unused_files):
+def calculate_health(logs, large_files, empty_files, unused_files, unused_deps):
     score = 100
-    score -= min(len(logs) * 3, 30)          # max penalty for logs
-    score -= min(len(large_files) * 2, 20)   # max penalty for large files
-    score -= min(len(empty_files) * 2, 10)   # max penalty for empty files
-    score -= min(len(unused_files) * 1, 10)  # max penalty for unused files
+    score -= min(len(logs) * 3, 30)
+    score -= min(len(large_files) * 2, 20)
+    score -= min(len(empty_files) * 2, 10)
+    score -= min(len(unused_files) * 1, 10)
+    score -= min(len(unused_deps) * 2, 20)
     return max(score, 0)
 
 # ------------------------
@@ -125,7 +182,7 @@ def calculate_health(logs, large_files, empty_files, unused_files):
 def run_cleanup():
     print("🔍 Scanning repo...\n")
 
-    # 1️⃣ Console logs
+    # Logs
     logs = find_console_logs()
     if logs:
         for file, line in logs:
@@ -134,7 +191,7 @@ def run_cleanup():
     else:
         print("✅ No console logs found.")
 
-    # 2️⃣ Large files
+    # Large files
     print("\n📂 Checking for large files...")
     large_files = find_large_files()
     if large_files:
@@ -143,7 +200,7 @@ def run_cleanup():
     else:
         print("✅ No oversized files found.")
 
-    # 3️⃣ Empty files
+    # Empty files
     print("\n🗑 Checking for empty files...")
     empty_files = find_empty_files()
     if empty_files:
@@ -152,7 +209,7 @@ def run_cleanup():
     else:
         print("✅ No empty files found.")
 
-    # 4️⃣ Unused files
+    # Unused files
     print("\n📦 Checking for potentially unused files...")
     unused_files = find_unused_files()
     if unused_files:
@@ -161,12 +218,21 @@ def run_cleanup():
     else:
         print("✅ No unused files found.")
 
-    # 5️⃣ Commit changes
+    # Unused dependencies
+    print("\n📌 Checking for unused dependencies...")
+    unused_deps = find_unused_dependencies()
+    if unused_deps:
+        for dep in unused_deps:
+            print(f"⚠️ Unused dependency: {dep}")
+    else:
+        print("✅ No unused dependencies found.")
+
+    # Commit changes
     print("\n💾 Committing changes if any...")
     commit_changes()
 
-    # 6️⃣ Repo Health Score
-    score = calculate_health(logs, large_files, empty_files, unused_files)
+    # Repo Health Score
+    score = calculate_health(logs, large_files, empty_files, unused_files, unused_deps)
     print(f"\n📊 Repo Health Score: {score}/100")
     print("🎉 Repo scan complete!")
 
