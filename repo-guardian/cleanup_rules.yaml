@@ -1,0 +1,15 @@
+rules:
+  remove_console_logs: true
+  remove_unused_imports: true
+  delete_empty_files: true
+
+folders:
+  components: src/components
+  pages: src/pages
+  hooks: src/hooks
+  utils: src/utils
+
+ignore:
+  - node_modules
+  - .git
+  - dist
